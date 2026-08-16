@@ -1,0 +1,21 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Training Logs & Temporary Checkpoints
+sarcasm_lora/
+dev_sentiment_lora/
+runs/
+checkpoint-*/
+
+# OS & Editor Files
+.DS_Store
+.vscode/
+.idea/
