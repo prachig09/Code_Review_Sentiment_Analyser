@@ -16,6 +16,10 @@ LABEL_MAPPING = {
     2: "Sarcastic / Passive-Aggressive"
 }
 
+@app.get("/")
+def home():
+    return {"message": "Sarcasm & Developer Tone API is running. Go to /docs to test endpoints."}
+
 # In backend/main.py
 @app.on_event("startup")
 def load_model():
