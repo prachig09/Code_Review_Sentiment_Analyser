@@ -1,8 +1,6 @@
-# app_ui.py
-import gradio as gr
-import requests
 import os 
-FASTAPI_URL = "http://127.0.0.1:8000/predict"
+import requests
+import gradio as gr
 
 # Get backend URL from environment variable, falling back to localhost for local testing
 FASTAPI_URL = os.getenv("FASTAPI_URL", "http://127.0.0.1:8000")
@@ -13,13 +11,14 @@ def analyze_tone(user_text):
         return "Please enter text.", {}
     
     try:
-        response = requests.post(FASTAPI_URL, json={"text": user_text}, timeout=5)
+        # FIX: Changed FASTAPI_URL -> API_URL and increased timeout for Render cold starts
+        response = requests.post(API_URL, json={"text": user_text}, timeout=15)
         if response.status_code == 200:
             data = response.json()
             return data["prediction"], data["confidence"]
         return f"Error: Status {response.status_code}", {}
     except Exception as e:
-        return f"Could not connect to FastAPI server: {str(e)}", {}
+        return f"Could not connect to FastAPI server at {API_URL}: {str(e)}", {}
 
 with gr.Blocks(theme=gr.themes.Soft()) as demo:
     gr.Markdown("# Code Review Sarcasm & Passive-Aggression Detector")
@@ -58,5 +57,3 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 7860))
     demo.launch(server_name="0.0.0.0", server_port=port)
-
-    
