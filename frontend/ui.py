@@ -1,10 +1,12 @@
 # app_ui.py
 import gradio as gr
 import requests
-
+import os 
 FASTAPI_URL = "http://127.0.0.1:8000/predict"
 
-
+# Get backend URL from environment variable, falling back to localhost for local testing
+FASTAPI_URL = os.getenv("FASTAPI_URL", "http://127.0.0.1:8000")
+API_URL = f"{FASTAPI_URL.rstrip('/')}/predict"
 
 def analyze_tone(user_text):
     if not user_text.strip():
@@ -54,4 +56,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     )
 
 if __name__ == "__main__":
-    demo.launch(server_port=7860)
+    port = int(os.environ.get("PORT", 7860))
+    demo.launch(server_name="0.0.0.0", server_port=port)
+
+    
