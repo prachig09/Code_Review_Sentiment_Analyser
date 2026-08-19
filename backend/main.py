@@ -1,12 +1,12 @@
-# main.py
+import gc
+import torch
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import BaseModel
-import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from peft import PeftModel
 
-app = FastAPI(title="Sarcasm & Developer Tone Analyzer API")
-
+# Global model pointers
 tokenizer = None
 model = None
 
@@ -16,27 +16,50 @@ LABEL_MAPPING = {
     2: "Sarcastic / Passive-Aggressive"
 }
 
-@app.get("/")
-def home():
-    return {"message": "Sarcasm & Developer Tone API is running. Go to /docs to test endpoints."}
-
-# In backend/main.py
-@app.on_event("startup")
-def load_model():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global tokenizer, model
-    base_model_id = "distilbert-base-uncased"
     
-    # Updated relative path matching your repo structure
+    # Restrict PyTorch CPU thread count to save RAM overhead
+    torch.set_num_threads(1)
+    
+    base_model_id = "distilbert-base-uncased"
     adapter_path = "./models/saved_sarcasm_lora_adapter"
     
     tokenizer = AutoTokenizer.from_pretrained(adapter_path)
-    base_model = AutoModelForSequenceClassification.from_pretrained(base_model_id, num_labels=3)
     
+    # Load base model using low CPU memory flag
+    base_model = AutoModelForSequenceClassification.from_pretrained(
+        base_model_id, 
+        num_labels=3,
+        low_cpu_mem_usage=True
+    )
+    
+    # Attach PEFT adapter
     model = PeftModel.from_pretrained(base_model, adapter_path)
     model.eval()
+    
+    # Force Garbage Collection after initialization
+    gc.collect()
+    
+    yield
+    
+    # Cleanup on shutdown
+    del model
+    del tokenizer
+    gc.collect()
+
+app = FastAPI(
+    title="Sarcasm & Developer Tone Analyzer API",
+    lifespan=lifespan
+)
 
 class TextRequest(BaseModel):
     text: str
+
+@app.get("/")
+def home():
+    return {"message": "Sarcasm & Developer Tone API is running. Go to /docs to test endpoints."}
 
 @app.post("/predict")
 def predict_tone(payload: TextRequest):
