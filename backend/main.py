@@ -1,11 +1,8 @@
-import gc
-import os
-import torch
-from contextlib import asynccontextmanager
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from peft import PeftModel
+from transformers import AutoTokenizer
+import onnxruntime as ort
 
 LABEL_MAPPING = {
     0: "Constructive / Positive",
@@ -13,89 +10,61 @@ LABEL_MAPPING = {
     2: "Sarcastic / Passive-Aggressive"
 }
 
-# Global pointers initialized as None
-tokenizer = None
-model = None
+app = FastAPI(title="Sarcasm & Developer Tone Analyzer API (ONNX)")
 
-def get_model_and_tokenizer():
-    """Dynamically loads model into memory with half-precision (FP16) on demand."""
-    global tokenizer, model
-    
-    if model is None or tokenizer is None:
-        # 1. Restrict PyTorch thread count to lower system memory overhead
-        torch.set_num_threads(1)
-        
-        base_model_id = "distilbert-base-uncased"
-        adapter_path = "./models/saved_sarcasm_lora_adapter"
-        
-        # 2. Fetch optional HF_TOKEN if set in environment
-        hf_token = os.getenv("HF_TOKEN", None)
-        
-        # 3. Load Tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(
-            adapter_path, 
-            token=hf_token
-        )
-        
-        # 4. Load Base Model in float16 (half-precision) to halve memory footprint
-        base_model = AutoModelForSequenceClassification.from_pretrained(
-            base_model_id, 
-            num_labels=3,
-            low_cpu_mem_usage=True,
-            torch_dtype=torch.float16,
-            token=hf_token
-        )
-        
-        # 5. Attach PEFT LoRA adapter
-        model = PeftModel.from_pretrained(base_model, adapter_path)
-        model.eval()
-        
-        # 6. Force garbage collection to sweep temporary allocation artifacts
-        gc.collect()
-        
-    return model, tokenizer
+# Load tokenizer and ONNX inference session at boot
+# This takes ~60MB RAM instead of 450MB+ with PyTorch
+MODEL_DIR = "./models/onnx_light"
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # App startup logic (kept lightweight to prevent OOM on server boot)
-    yield
-    # Cleanup on server shutdown
-    global model, tokenizer
-    del model
-    del tokenizer
-    gc.collect()
-
-app = FastAPI(
-    title="Sarcasm & Developer Tone Analyzer API",
-    lifespan=lifespan
-)
+try:
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
+    session = ort.InferenceSession(f"{MODEL_DIR}/model.onnx")
+except Exception as err:
+    print(f"Failed to load ONNX model files: {err}")
+    tokenizer = None
+    session = None
 
 class TextRequest(BaseModel):
     text: str
 
+def softmax(x):
+    e_x = np.exp(x - np.max(x))
+    return e_x / e_x.sum(axis=-1, keepdims=True)
+
 @app.get("/")
 def home():
-    return {"message": "Sarcasm & Developer Tone API is running. Send POST requests to /predict."}
+    return {"message": "Sarcasm & Developer Tone API (ONNX) is running. Send POST requests to /predict."}
 
 @app.post("/predict")
 def predict_tone(payload: TextRequest):
+    if session is None or tokenizer is None:
+        raise HTTPException(
+            status_code=500, 
+            detail="ONNX model or tokenizer is not initialized. Ensure model.onnx exists in ./models/onnx_light"
+        )
+
     try:
-        # Load model lazily on first incoming request
-        active_model, active_tokenizer = get_model_and_tokenizer()
-        
-        inputs = active_tokenizer(
+        # Tokenize directly to NumPy arrays (no PyTorch tensors needed)
+        inputs = tokenizer(
             payload.text, 
-            return_tensors="pt", 
+            return_tensors="np", 
             truncation=True, 
             max_length=128
         )
         
-        with torch.no_grad():
-            outputs = active_model(**inputs)
-            logits = outputs.logits
-            # Convert FP16 logits back to FP32 for numeric precision during softmax
-            probs = torch.softmax(logits.to(torch.float32), dim=1).flatten().tolist()
-            predicted_class = torch.argmax(logits, dim=1).item()
+        # Format inputs for ONNX Runtime session
+        onnx_inputs = {
+            "input_ids": inputs["input_ids"].astype(np.int64),
+            "attention_mask": inputs["attention_mask"].astype(np.int64)
+        }
+        
+        # Run inference
+        outputs = session.run(None, onnx_inputs)
+        logits = outputs[0][0]
+        
+        # Calculate probabilities and prediction
+        probs = softmax(logits).tolist()
+        predicted_class = int(np.argmax(logits))
         
         return {
             "text": payload.text,
