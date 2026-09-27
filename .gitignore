@@ -19,3 +19,9 @@ checkpoint-*/
 .DS_Store
 .vscode/
 .idea/
+
+# Force add the newly quantized model file
+git add -f models/onnx_light/model.onnx
+
+# Verify model.onnx appears in tracked files
+git ls-files models/onnx_light/

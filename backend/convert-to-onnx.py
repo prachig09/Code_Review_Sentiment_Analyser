@@ -1,35 +1,45 @@
-# convert_simple.py
-import torch
+# backend/convert-to-onnx.py
 import os
-import numpy as np
+import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from peft import PeftModel
 
-base_model_id = "distilbert-base-uncased"
-adapter_path = "./models/saved_sarcasm_lora_adapter"
-output_dir = "./models/onnx_light"
+ADAPTER_PATH = "./models/saved_sarcasm_lora_adapter"
+BASE_MODEL_ID = "distilbert-base-uncased"
+OUTPUT_DIR = "./models/onnx_light"
 
-os.makedirs(output_dir, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-print("1. Loading and merging model weights...")
-tokenizer = AutoTokenizer.from_pretrained(adapter_path)
-base_model = AutoModelForSequenceClassification.from_pretrained(base_model_id, num_labels=3)
-model = PeftModel.from_pretrained(base_model, adapter_path)
+print("1. Loading base model and attaching LoRA weights...")
+tokenizer = AutoTokenizer.from_pretrained(ADAPTER_PATH)
+base_model = AutoModelForSequenceClassification.from_pretrained(BASE_MODEL_ID, num_labels=3)
+lora_model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
 
-# Merge LoRA weights into base model
-merged_model = model.merge_and_unload()
+print("2. Merging LoRA layers into base model...")
+merged_model = lora_model.merge_and_unload()
 merged_model.eval()
 
-# Save tokenizer to the new directory
-tokenizer.save_pretrained(output_dir)
+# Save tokenizer files
+tokenizer.save_pretrained(OUTPUT_DIR)
 
-print("2. Exporting to ONNX...")
-dummy_input = tokenizer("Test input text for ONNX export", return_tensors="pt")
+print("3. Exporting to single ONNX file using legacy tracer...")
+dummy_input = tokenizer("Sample text for ONNX export tracing", return_tensors="pt")
 
+onnx_path = os.path.join(OUTPUT_DIR, "model.onnx")
+
+# Remove split data file if it exists
+data_file = os.path.join(OUTPUT_DIR, "model.onnx.data")
+if os.path.exists(data_file):
+    os.remove(data_file)
+
+# Export using legacy TorchScript backend (bypasses PyTorch Dynamo)
 torch.onnx.export(
     merged_model,
     (dummy_input["input_ids"], dummy_input["attention_mask"]),
-    f"{output_dir}/model.onnx",
+    onnx_path,
+    export_params=True,
+    opset_version=14,
+    do_constant_folding=True,
     input_names=["input_ids", "attention_mask"],
     output_names=["logits"],
     dynamic_axes={
@@ -37,7 +47,7 @@ torch.onnx.export(
         "attention_mask": {0: "batch_size", 1: "sequence_length"},
         "logits": {0: "batch_size"}
     },
-    opset_version=14
+    dynamo=False  # Crucial for PyTorch 2.x on Python 3.13!
 )
 
-print(f"Done! Model saved to {output_dir}/model.onnx")
+print(f"Success! Model successfully exported to: {onnx_path}")
